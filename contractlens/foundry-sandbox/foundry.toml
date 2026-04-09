@@ -1,0 +1,15 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+solc_version = "0.8.24"
+
+[rpc_endpoints]
+mainnet = "${RPC_URL}"
+
+[fuzz]
+runs = 256
+
+[fmt]
+line_length = 120
