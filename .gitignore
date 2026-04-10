@@ -1,0 +1,40 @@
+# === secrets ===
+.env
+.env.*
+!.env.example
+
+# === node ===
+node_modules/
+dist/
+*.tsbuildinfo
+
+# === foundry ===
+# Local foundry toolchain binaries (installed per-machine, not committed)
+anvil.exe
+cast.exe
+chisel.exe
+forge.exe
+foundry.zip
+/tools/foundry/
+
+# Per-project foundry state
+contractlens/.foundry/
+contractlens/foundry-sandbox/out/
+contractlens/foundry-sandbox/cache/
+contractlens/foundry-sandbox/lib/
+contractlens/foundry-sandbox/foundry.lock
+contractlens/foundry-sandbox/.gitmodules
+
+# AI-generated exploit tests (regenerated every audit run)
+contractlens/foundry-sandbox/test/Exploit_*.t.sol
+
+# === claude code temp files ===
+tmpclaude-*
+.claude/projects/
+.claude/statsig/
+.claude/shell-snapshots/
+.claude/todos/
+
+# === build / debug output ===
+tsc.out
+*.log
