@@ -3,6 +3,7 @@ import { mainnet, sepolia } from "viem/chains";
 import {
   fetchVerifiedSource,
   flattenMultiFileSource,
+  parseMultiFileSource,
 } from "../utils/etherscan.js";
 import { callAI } from "../utils/ai.js";
 import type { SourceResult } from "../utils/types.js";
@@ -45,10 +46,16 @@ export async function fetchSource(
 
   if (verified) {
     const source = flattenMultiFileSource(verified.SourceCode);
+    const parsed = parseMultiFileSource(verified.SourceCode);
+    const files =
+      parsed ??
+      { [`${verified.ContractName || "Contract"}.sol`]: verified.SourceCode };
     return {
       source,
       name: verified.ContractName || "Unknown",
       isDecompiled: false,
+      files,
+      compilerVersion: verified.CompilerVersion || undefined,
     };
   }
 

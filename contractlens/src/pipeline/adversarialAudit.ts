@@ -3,6 +3,7 @@ import type {
   ContractInventory,
   ExploitVector,
   AuditResult,
+  SlitherFinding,
 } from "../utils/types.js";
 
 interface AttackerResult {
@@ -26,10 +27,21 @@ interface VerdictResult {
   summary: string;
 }
 
+function formatSlitherFindings(findings: SlitherFinding[]): string {
+  if (findings.length === 0) return "(none reported)";
+  return findings
+    .map((f, i) => {
+      const fns = f.functions.length > 0 ? ` [${f.functions.join(", ")}]` : "";
+      return `${i + 1}. [${f.severity}] ${f.detector}${fns}: ${f.description}`;
+    })
+    .join("\n");
+}
+
 export async function adversarialAudit(
   source: string,
   inventory: ContractInventory,
-  isDecompiled: boolean = false
+  isDecompiled: boolean = false,
+  slitherFindings: SlitherFinding[] = []
 ): Promise<AuditResult> {
   // Decompiled bytecode is AI-reconstructed pseudocode — not reliable enough
   // to produce a meaningful risk score. Return an explicit low-confidence
@@ -62,6 +74,14 @@ If you genuinely find no exploit vectors after a thorough review, return an empt
 
 Contract Inventory:
 ${JSON.stringify(inventory, null, 2)}
+
+Deterministic static analysis findings (Slither) — these were produced by a
+deterministic tool, not an LLM guess. Treat them as ground truth: include
+every HIGH/MEDIUM finding in your output (map to your severity scale) and
+only exclude a finding if you can cite the exact code that neutralizes it.
+You may also add additional vectors Slither missed.
+
+${formatSlitherFindings(slitherFindings)}
 
 Source Code:
 \`\`\`solidity
@@ -110,6 +130,7 @@ Rules:
 - Base the score on the actual severity and mitigation level of findings, and on the overall contract design. Do NOT default to a fixed value.
 - An empty exploit list does NOT automatically mean the contract is safe — re-read the source and decide whether the auditors missed something or the contract is genuinely clean.
 - If the source looks thin, unusual, or too simple to judge, lower your confidence accordingly.
+- Slither findings are deterministic ground truth from a static analyzer. Weight unmitigated HIGH/MEDIUM Slither findings more heavily than AI-only findings, and raise your confidence when Slither agrees with the adversarial pass.
 - USE THE FULL 0-100 RANGE. Do not compress scores into the 50-70 band. A well-audited, immutable contract with no privileged roles deserves 85+. A contract with unrestricted owner mint or drain deserves 20-35. A contract with confirmed reentrancy that moves funds deserves 0-15.
 
 Score anchors (calibrate against these reference points):
@@ -140,6 +161,9 @@ Return a JSON object with:
 
 Contract Inventory:
 ${JSON.stringify(inventory, null, 2)}
+
+Slither static analysis findings (deterministic, higher confidence than AI-only findings):
+${formatSlitherFindings(slitherFindings)}
 
 Exploit Vectors with Defenses (may be empty):
 ${JSON.stringify(enrichedExploits, null, 2)}

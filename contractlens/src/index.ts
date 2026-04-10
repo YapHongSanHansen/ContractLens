@@ -4,6 +4,7 @@ import "dotenv/config";
 import { Command } from "commander";
 import chalk from "chalk";
 import { fetchSource } from "./pipeline/fetchSource.js";
+import { runStaticAnalysis } from "./pipeline/staticAnalysis.js";
 import { analyzeStructure } from "./pipeline/structuralAnalysis.js";
 import { adversarialAudit } from "./pipeline/adversarialAudit.js";
 import { testExploits } from "./pipeline/exploitTesting.js";
@@ -57,8 +58,50 @@ program
         );
       }
 
-      // ═══ PHASE 2: Structural Analysis ═══
-      console.log(chalk.yellow("\n▶ Phase 2: Analyzing contract structure..."));
+      // ═══ PHASE 2: Static Analysis (Slither) ═══
+      console.log(
+        chalk.yellow("\n▶ Phase 2: Running static analysis (Slither)...")
+      );
+      const staticResult = await runStaticAnalysis(sourceResult);
+      if (!staticResult.slither.available) {
+        console.log(
+          chalk.gray(
+            sourceResult.isDecompiled
+              ? "  ⊘ Skipped: contract is unverified (Slither needs real Solidity)"
+              : "  ⊘ Skipped: Slither not installed — continuing without SAST ground truth"
+          )
+        );
+      } else if (staticResult.slither.error) {
+        console.log(
+          chalk.yellow(
+            `  ⚠ Slither error: ${staticResult.slither.error} — continuing without SAST findings`
+          )
+        );
+      } else {
+        const bySeverity: Record<string, number> = {};
+        for (const f of staticResult.slither.findings) {
+          bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1;
+        }
+        const breakdown =
+          Object.entries(bySeverity)
+            .map(([k, v]) => `${v} ${k.toLowerCase()}`)
+            .join(", ") || "none";
+        console.log(
+          chalk.green(
+            `  ✓ Slither findings: ${staticResult.slither.findings.length} (${breakdown})`
+          )
+        );
+        if (verbose) {
+          for (const f of staticResult.slither.findings.slice(0, 10)) {
+            console.log(
+              chalk.gray(`    [${f.severity}] ${f.detector}: ${f.description.split("\n")[0].slice(0, 120)}`)
+            );
+          }
+        }
+      }
+
+      // ═══ PHASE 3: Structural Analysis ═══
+      console.log(chalk.yellow("\n▶ Phase 3: Analyzing contract structure..."));
       const inventory = await analyzeStructure(
         sourceResult.source,
         sourceResult.name
@@ -90,9 +133,9 @@ program
         );
       }
 
-      // ═══ PHASE 3: Adversarial Audit ═══
+      // ═══ PHASE 4: Adversarial Audit ═══
       console.log(
-        chalk.yellow("\n▶ Phase 3: Running adversarial audit (3 AI passes)...")
+        chalk.yellow("\n▶ Phase 4: Running adversarial audit (3 AI passes)...")
       );
       console.log(chalk.gray("    Pass 1: Attacker analysis..."));
       console.log(chalk.gray("    Pass 2: Defender analysis..."));
@@ -100,7 +143,8 @@ program
       const auditResult = await adversarialAudit(
         sourceResult.source,
         inventory,
-        sourceResult.isDecompiled
+        sourceResult.isDecompiled,
+        staticResult.slither.findings
       );
       console.log(
         chalk.green(
@@ -130,9 +174,9 @@ program
         console.log(chalk.gray(`    Summary: ${auditResult.summary}`));
       }
 
-      // ═══ PHASE 4: Exploit Testing ═══
+      // ═══ PHASE 5: Exploit Testing ═══
       console.log(
-        chalk.yellow("\n▶ Phase 4: Testing exploits in Foundry sandbox...")
+        chalk.yellow("\n▶ Phase 5: Testing exploits in Foundry sandbox...")
       );
       const critHighCount = auditResult.exploits.filter(
         (e) => e.severity === "CRITICAL" || e.severity === "HIGH"
@@ -158,13 +202,13 @@ program
         )
       );
 
-      // ═══ PHASE 5: Publication ═══
+      // ═══ PHASE 6: Publication ═══
       let ipfsCid = "N/A";
       let txHash = "N/A";
 
       if (!skipPublish) {
         console.log(
-          chalk.yellow("\n▶ Phase 5: Publishing audit results...")
+          chalk.yellow("\n▶ Phase 6: Publishing audit results...")
         );
         try {
           const publishResult = await publishAudit(
@@ -187,7 +231,7 @@ program
         }
       } else {
         console.log(
-          chalk.gray("\n▶ Phase 5: Skipped (--skip-publish)")
+          chalk.gray("\n▶ Phase 6: Skipped (--skip-publish)")
         );
       }
 
