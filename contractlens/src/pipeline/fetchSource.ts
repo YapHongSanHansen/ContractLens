@@ -1,5 +1,5 @@
 import { createPublicClient, http } from "viem";
-import { mainnet } from "viem/chains";
+import { mainnet, sepolia } from "viem/chains";
 import {
   fetchVerifiedSource,
   flattenMultiFileSource,
@@ -7,14 +7,41 @@ import {
 import { callAI } from "../utils/ai.js";
 import type { SourceResult } from "../utils/types.js";
 
-export async function fetchSource(address: string): Promise<SourceResult> {
+function resolveViemChain(chain: string) {
+  switch (chain.toLowerCase()) {
+    case "ethereum":
+    case "mainnet":
+      return mainnet;
+    case "sepolia":
+      return sepolia;
+    default:
+      throw new Error(
+        `Unsupported chain "${chain}". Supported: ethereum, sepolia.`
+      );
+  }
+}
+
+export async function fetchSource(
+  address: string,
+  chain: string = "ethereum"
+): Promise<SourceResult> {
   const etherscanKey = process.env.ETHERSCAN_API_KEY;
   if (!etherscanKey) {
     throw new Error("ETHERSCAN_API_KEY is required in .env");
   }
 
-  // Step 1: Try Etherscan verified source
-  const verified = await fetchVerifiedSource(address, etherscanKey);
+  // Step 1: Try Etherscan verified source. A network/API failure here is
+  // different from "contract is unverified" — only the latter should fall
+  // through to decompilation. A thrown error means Etherscan itself rejected
+  // the call (e.g. bad key, deprecated endpoint) and must be surfaced.
+  let verified;
+  try {
+    verified = await fetchVerifiedSource(address, etherscanKey, chain);
+  } catch (err) {
+    throw new Error(
+      `Etherscan lookup failed for ${address} on ${chain}: ${err instanceof Error ? err.message : err}`
+    );
+  }
 
   if (verified) {
     const source = flattenMultiFileSource(verified.SourceCode);
@@ -32,7 +59,7 @@ export async function fetchSource(address: string): Promise<SourceResult> {
   }
 
   const client = createPublicClient({
-    chain: mainnet,
+    chain: resolveViemChain(chain),
     transport: http(rpcUrl),
   });
 

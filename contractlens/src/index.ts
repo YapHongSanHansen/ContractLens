@@ -25,22 +25,30 @@ program
   .option("--verbose", "Enable verbose output")
   .action(async (address: string, options) => {
     const { verbose, skipPublish } = options;
+    const chain = String(options.chain || "ethereum");
 
     console.log(
       chalk.bold.cyan("\n  ContractLens — AI Smart Contract Auditor\n")
     );
     console.log(chalk.gray(`  Target: ${address}`));
-    console.log(chalk.gray(`  Chain:  ${options.chain}\n`));
+    console.log(chalk.gray(`  Chain:  ${chain}\n`));
 
     try {
       // ═══ PHASE 1: Source Retrieval ═══
       console.log(chalk.yellow("▶ Phase 1: Fetching contract source..."));
-      const sourceResult = await fetchSource(address);
+      const sourceResult = await fetchSource(address, chain);
       console.log(
         chalk.green(
           `  ✓ Source retrieved: ${sourceResult.name}${sourceResult.isDecompiled ? " (decompiled)" : " (verified)"}`
         )
       );
+      if (sourceResult.isDecompiled) {
+        console.log(
+          chalk.yellow(
+            "  ⚠ Contract is UNVERIFIED. Source was reconstructed from bytecode by AI and is unreliable — verdict will be forced to CAUTION with low confidence."
+          )
+        );
+      }
       if (verbose) {
         console.log(
           chalk.gray(
@@ -91,7 +99,8 @@ program
       console.log(chalk.gray("    Pass 3: Final verdict..."));
       const auditResult = await adversarialAudit(
         sourceResult.source,
-        inventory
+        inventory,
+        sourceResult.isDecompiled
       );
       console.log(
         chalk.green(
@@ -108,6 +117,18 @@ program
           `  ✓ Verdict: ${colorVerdict(auditResult.verdict)}`
         )
       );
+
+      if (verbose && auditResult.exploits.length > 0) {
+        console.log(chalk.gray("    ─── Exploit details ───"));
+        for (const e of auditResult.exploits) {
+          console.log(
+            chalk.gray(
+              `    [${e.id}] ${e.severity} — ${e.description}`
+            )
+          );
+        }
+        console.log(chalk.gray(`    Summary: ${auditResult.summary}`));
+      }
 
       // ═══ PHASE 4: Exploit Testing ═══
       console.log(
@@ -150,7 +171,8 @@ program
             address,
             sourceResult.name,
             auditResult,
-            testResults
+            testResults,
+            chain
           );
           ipfsCid = publishResult.ipfsCid;
           txHash = publishResult.txHash;

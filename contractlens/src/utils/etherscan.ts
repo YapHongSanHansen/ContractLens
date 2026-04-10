@@ -14,20 +14,46 @@ export interface EtherscanSourceResponse {
   SwarmSource: string;
 }
 
+function getEtherscanChainId(chain: string): number {
+  switch (chain.toLowerCase()) {
+    case "ethereum":
+    case "mainnet":
+      return 1;
+    case "sepolia":
+      return 11155111;
+    default:
+      throw new Error(
+        `Unsupported chain "${chain}". Supported: ethereum, sepolia.`
+      );
+  }
+}
+
 export async function fetchVerifiedSource(
   address: string,
-  apiKey: string
+  apiKey: string,
+  chain: string = "ethereum"
 ): Promise<EtherscanSourceResponse | null> {
-  const url = `https://api.etherscan.io/api?module=contract&action=getsourcecode&address=${address}&apikey=${apiKey}`;
+  // Etherscan deprecated the legacy per-chain V1 hosts in 2025; everything now
+  // goes through the V2 multichain endpoint with an explicit chainid param.
+  const chainId = getEtherscanChainId(chain);
+  const url = `https://api.etherscan.io/v2/api?chainid=${chainId}&module=contract&action=getsourcecode&address=${encodeURIComponent(address)}&apikey=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url);
-  const data = await response.json();
+  const data = (await response.json()) as {
+    status: string;
+    message?: string;
+    result?: EtherscanSourceResponse[] | string;
+  };
 
-  if (data.status !== "1" || !data.result || data.result.length === 0) {
-    return null;
+  if (data.status !== "1" || !Array.isArray(data.result) || data.result.length === 0) {
+    const reason =
+      typeof data.result === "string"
+        ? data.result
+        : data.message || "unknown error";
+    throw new Error(`Etherscan V2 getsourcecode failed: ${reason}`);
   }
 
-  const result = data.result[0] as EtherscanSourceResponse;
+  const result = data.result[0];
 
   // If SourceCode is empty, contract is not verified
   if (!result.SourceCode || result.SourceCode === "") {
