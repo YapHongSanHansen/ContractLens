@@ -20,13 +20,21 @@ program
 program
   .command("audit")
   .description("Run a full security audit on a smart contract")
-  .argument("<address>", "Contract address to audit")
+  .argument("[address]", "Contract address to audit (omit when using --file)")
   .option("--chain <chain>", "Chain to audit on", "ethereum")
+  .option("--file <path>", "Audit a local .sol file instead of fetching from Etherscan")
   .option("--skip-publish", "Skip IPFS upload and on-chain publication")
   .option("--verbose", "Enable verbose output")
-  .action(async (address: string, options) => {
-    const { verbose, skipPublish } = options;
+  .action(async (addressArg: string | undefined, options) => {
+    const { verbose, skipPublish, file } = options;
     const chain = String(options.chain || "ethereum");
+
+    if (!addressArg && !file) {
+      console.error(chalk.red("✗ Provide a contract address or --file <path>"));
+      process.exit(1);
+    }
+    const address: string =
+      addressArg || "0x0000000000000000000000000000000000000000";
 
     console.log(
       chalk.bold.cyan("\n  ContractLens — AI Smart Contract Auditor\n")
@@ -37,7 +45,7 @@ program
     try {
       // ═══ PHASE 1: Source Retrieval ═══
       console.log(chalk.yellow("▶ Phase 1: Fetching contract source..."));
-      const sourceResult = await fetchSource(address, chain);
+      const sourceResult = await fetchSource(address, chain, file);
       console.log(
         chalk.green(
           `  ✓ Source retrieved: ${sourceResult.name}${sourceResult.isDecompiled ? " (decompiled)" : " (verified)"}`

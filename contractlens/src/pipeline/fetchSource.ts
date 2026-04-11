@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+import { basename, resolve } from "path";
 import { createPublicClient, http } from "viem";
 import { mainnet, sepolia } from "viem/chains";
 import {
@@ -24,8 +26,25 @@ function resolveViemChain(chain: string) {
 
 export async function fetchSource(
   address: string,
-  chain: string = "ethereum"
+  chain: string = "ethereum",
+  filePath?: string
 ): Promise<SourceResult> {
+  if (filePath) {
+    const absPath = resolve(filePath);
+    const source = readFileSync(absPath, "utf8");
+    const fileName = basename(absPath);
+    const match = source.match(
+      /^\s*(?:abstract\s+)?contract\s+([A-Za-z_][A-Za-z0-9_]*)/m
+    );
+    const name = match?.[1] || fileName.replace(/\.sol$/, "");
+    return {
+      source,
+      name,
+      isDecompiled: false,
+      files: { [fileName]: source },
+    };
+  }
+
   const etherscanKey = process.env.ETHERSCAN_API_KEY;
   if (!etherscanKey) {
     throw new Error("ETHERSCAN_API_KEY is required in .env");
