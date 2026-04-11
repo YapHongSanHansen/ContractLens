@@ -23,12 +23,37 @@ function getOpenAIClient(): OpenAI {
 // runs because OpenAI defaults to temperature 1.0.
 const DETERMINISM_SEED = 42;
 
+type Provider = "anthropic" | "openai";
+
+function resolveProvider(): Provider {
+  const explicit = process.env.AI_PROVIDER?.trim().toLowerCase();
+  const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim();
+  const openaiKey = process.env.OPENAI_API_KEY?.trim();
+
+  if (explicit === "anthropic" || explicit === "openai") {
+    const key = explicit === "anthropic" ? anthropicKey : openaiKey;
+    if (!key) {
+      throw new Error(
+        `AI_PROVIDER=${explicit} but ${explicit === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"} is not set.`
+      );
+    }
+    return explicit;
+  }
+
+  if (anthropicKey) return "anthropic";
+  if (openaiKey) return "openai";
+  throw new Error(
+    "Missing AI API key. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your .env."
+  );
+}
+
 export async function callAI(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
-  const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim();
-  if (anthropicKey) {
+  const provider = resolveProvider();
+
+  if (provider === "anthropic") {
     const anthropic = getClient();
     const response = await anthropic.messages.create({
       model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514",
@@ -45,8 +70,7 @@ export async function callAI(
     throw new Error("Unexpected response type from Anthropic API");
   }
 
-  const openaiKey = process.env.OPENAI_API_KEY?.trim();
-  if (openaiKey) {
+  {
     const openai = getOpenAIClient();
     const response = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
@@ -63,10 +87,6 @@ export async function callAI(
     if (typeof text === "string" && text.trim()) return text;
     throw new Error("Unexpected response type from OpenAI API");
   }
-
-  throw new Error(
-    "Missing AI API key. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your .env."
-  );
 }
 
 function extractJson(text: string): string {
