@@ -3,10 +3,13 @@ import {
   createPublicClient,
   http,
   parseAbi,
+  decodeEventLog,
+  type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet, sepolia } from "viem/chains";
 import { pinReport } from "../utils/ipfs.js";
+import { pinBadgeMetadata } from "../utils/badgeMetadata.js";
 import type {
   AuditResult,
   ExploitTestResult,
@@ -17,12 +20,18 @@ const REGISTRY_ABI = parseAbi([
   "function publishAudit(address target, uint8 riskScore, string calldata verdict, string calldata reportCID, uint8 confirmedExploits) external",
 ]);
 
+const BADGE_ABI = parseAbi([
+  "function mint(address to, address auditedContract, uint8 riskScore, string calldata verdict, string calldata uri) external returns (uint256)",
+  "event BadgeMinted(uint256 indexed tokenId, address indexed auditedContract, address indexed recipient, uint8 riskScore, string verdict, string tokenURI)",
+]);
+
 export async function publishAudit(
   address: string,
   contractName: string,
   audit: AuditResult,
   testResults: ExploitTestResult[],
-  chain: string = "ethereum"
+  chain: string = "ethereum",
+  contractType?: string
 ): Promise<PublishResult> {
   // Generate markdown report
   const markdown = generateMarkdownReport(
@@ -38,7 +47,18 @@ export async function publishAudit(
   // Write to on-chain registry
   const txHash = await writeToRegistry(address, audit, testResults, ipfsCid, chain);
 
-  return { ipfsCid, txHash };
+  // Mint soulbound audit badge (skipped if BADGE_ADDRESS / keys not set)
+  const badge = await mintBadge(
+    address,
+    contractName,
+    audit,
+    testResults,
+    ipfsCid,
+    chain,
+    contractType
+  );
+
+  return { ipfsCid, txHash, badge };
 }
 
 function generateMarkdownReport(
@@ -176,4 +196,108 @@ async function writeToRegistry(
   await publicClient.waitForTransactionReceipt({ hash });
 
   return hash;
+}
+
+async function mintBadge(
+  address: string,
+  contractName: string,
+  audit: AuditResult,
+  testResults: ExploitTestResult[],
+  reportCid: string,
+  chain: string,
+  contractType?: string
+): Promise<PublishResult["badge"]> {
+  const badgeAddress = process.env.BADGE_ADDRESS;
+  const privateKey = process.env.PRIVATE_KEY;
+  const rpcUrl = process.env.RPC_URL;
+
+  if (!badgeAddress || !privateKey || !rpcUrl) {
+    return undefined;
+  }
+
+  const account = privateKeyToAccount(
+    (privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex
+  );
+  const viemChain = chain.toLowerCase() === "sepolia" ? sepolia : mainnet;
+
+  const walletClient = createWalletClient({
+    account,
+    chain: viemChain,
+    transport: http(rpcUrl),
+  });
+  const publicClient = createPublicClient({
+    chain: viemChain,
+    transport: http(rpcUrl),
+  });
+
+  const confirmedExploits = testResults.filter((t) => t.passed).length;
+
+  // 1. Pin badge metadata JSON (image is AI-generated if possible, else SVG)
+  const pinned = await pinBadgeMetadata({
+    contractName,
+    contractAddress: address,
+    contractType,
+    verdict: audit.verdict,
+    riskScore: audit.riskScore,
+    confidence: audit.confidence,
+    exploitCount: audit.exploits.length,
+    confirmedExploits,
+    reportCid,
+    chain,
+  });
+  const tokenURI = pinned.tokenUri;
+
+  const riskScore = Math.min(Math.max(audit.riskScore, 0), 255);
+
+  // 2. Mint the badge to the auditor wallet (so it shows up in MetaMask)
+  const mintTxHash = await walletClient.writeContract({
+    address: badgeAddress as Hex,
+    abi: BADGE_ABI,
+    functionName: "mint",
+    args: [
+      account.address,
+      address as Hex,
+      riskScore,
+      audit.verdict,
+      tokenURI,
+    ],
+  });
+
+  const receipt = await publicClient.waitForTransactionReceipt({ hash: mintTxHash });
+
+  // 3. Pull tokenId out of the BadgeMinted event
+  let tokenId = "?";
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== badgeAddress.toLowerCase()) continue;
+    try {
+      const decoded = decodeEventLog({
+        abi: BADGE_ABI,
+        data: log.data,
+        topics: log.topics,
+      });
+      if (decoded.eventName === "BadgeMinted") {
+        tokenId = decoded.args.tokenId.toString();
+        break;
+      }
+    } catch {
+      // Not our event — skip
+    }
+  }
+
+  // OpenSea shut down testnet support, so we use Etherscan — which renders
+  // ERC-721 metadata and images directly on its token inventory page.
+  const explorerUrl =
+    viemChain.id === sepolia.id
+      ? `https://sepolia.etherscan.io/token/${badgeAddress}?a=${tokenId}`
+      : `https://etherscan.io/token/${badgeAddress}?a=${tokenId}`;
+
+  return {
+    tokenId,
+    mintTxHash,
+    tokenURI,
+    recipient: account.address,
+    contractAddress: badgeAddress,
+    openseaUrl: explorerUrl,
+    imageMethod: pinned.imageMethod,
+  };
 }

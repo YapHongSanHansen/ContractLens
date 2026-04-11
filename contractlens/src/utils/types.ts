@@ -63,4 +63,13 @@ export interface SlitherFinding {
 export interface PublishResult {
   ipfsCid: string;
   txHash: string;
+  badge?: {
+    tokenId: string;
+    mintTxHash: string;
+    tokenURI: string;
+    recipient: string;
+    contractAddress: string;
+    openseaUrl?: string;
+    imageMethod?: "ai-dalle3" | "svg-level2" | "custom-file";
+  };
 }
