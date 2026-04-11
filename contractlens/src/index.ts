@@ -9,6 +9,7 @@ import { analyzeStructure } from "./pipeline/structuralAnalysis.js";
 import { adversarialAudit } from "./pipeline/adversarialAudit.js";
 import { testExploits } from "./pipeline/exploitTesting.js";
 import { publishAudit } from "./pipeline/publish.js";
+import { probeDcai } from "./utils/dcai.js";
 
 const program = new Command();
 
@@ -40,7 +41,20 @@ program
       chalk.bold.cyan("\n  ContractLens — AI Smart Contract Auditor\n")
     );
     console.log(chalk.gray(`  Target: ${address}`));
-    console.log(chalk.gray(`  Chain:  ${chain}\n`));
+    console.log(chalk.gray(`  Chain:  ${chain}`));
+
+    // Read-only sidecar probe of the dcai RPC service. Isolated from the
+    // mint/registry flow — this can never block or fail the audit.
+    const dcai = await probeDcai();
+    if (dcai.ok) {
+      console.log(
+        chalk.gray(
+          `  dcai:   chain ${dcai.chainId} @ block ${dcai.blockNumber.toLocaleString()}\n`
+        )
+      );
+    } else {
+      console.log(chalk.gray(`  dcai:   unreachable (${dcai.error})\n`));
+    }
 
     try {
       // ═══ PHASE 1: Source Retrieval ═══
