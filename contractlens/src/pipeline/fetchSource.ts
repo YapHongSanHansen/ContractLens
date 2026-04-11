@@ -1,27 +1,80 @@
+import { readFileSync } from "fs";
+import { basename, resolve } from "path";
 import { createPublicClient, http } from "viem";
-import { mainnet } from "viem/chains";
+import { mainnet, sepolia } from "viem/chains";
 import {
   fetchVerifiedSource,
   flattenMultiFileSource,
+  parseMultiFileSource,
 } from "../utils/etherscan.js";
 import { callAI } from "../utils/ai.js";
 import type { SourceResult } from "../utils/types.js";
 
-export async function fetchSource(address: string): Promise<SourceResult> {
+function resolveViemChain(chain: string) {
+  switch (chain.toLowerCase()) {
+    case "ethereum":
+    case "mainnet":
+      return mainnet;
+    case "sepolia":
+      return sepolia;
+    default:
+      throw new Error(
+        `Unsupported chain "${chain}". Supported: ethereum, sepolia.`
+      );
+  }
+}
+
+export async function fetchSource(
+  address: string,
+  chain: string = "ethereum",
+  filePath?: string
+): Promise<SourceResult> {
+  if (filePath) {
+    const absPath = resolve(filePath);
+    const source = readFileSync(absPath, "utf8");
+    const fileName = basename(absPath);
+    const match = source.match(
+      /^\s*(?:abstract\s+)?contract\s+([A-Za-z_][A-Za-z0-9_]*)/m
+    );
+    const name = match?.[1] || fileName.replace(/\.sol$/, "");
+    return {
+      source,
+      name,
+      isDecompiled: false,
+      files: { [fileName]: source },
+    };
+  }
+
   const etherscanKey = process.env.ETHERSCAN_API_KEY;
   if (!etherscanKey) {
     throw new Error("ETHERSCAN_API_KEY is required in .env");
   }
 
-  // Step 1: Try Etherscan verified source
-  const verified = await fetchVerifiedSource(address, etherscanKey);
+  // Step 1: Try Etherscan verified source. A network/API failure here is
+  // different from "contract is unverified" — only the latter should fall
+  // through to decompilation. A thrown error means Etherscan itself rejected
+  // the call (e.g. bad key, deprecated endpoint) and must be surfaced.
+  let verified;
+  try {
+    verified = await fetchVerifiedSource(address, etherscanKey, chain);
+  } catch (err) {
+    throw new Error(
+      `Etherscan lookup failed for ${address} on ${chain}: ${err instanceof Error ? err.message : err}`
+    );
+  }
 
   if (verified) {
     const source = flattenMultiFileSource(verified.SourceCode);
+    const parsed = parseMultiFileSource(verified.SourceCode);
+    const files =
+      parsed ??
+      { [`${verified.ContractName || "Contract"}.sol`]: verified.SourceCode };
     return {
       source,
       name: verified.ContractName || "Unknown",
       isDecompiled: false,
+      files,
+      compilerVersion: verified.CompilerVersion || undefined,
     };
   }
 
@@ -32,7 +85,7 @@ export async function fetchSource(address: string): Promise<SourceResult> {
   }
 
   const client = createPublicClient({
-    chain: mainnet,
+    chain: resolveViemChain(chain),
     transport: http(rpcUrl),
   });
 

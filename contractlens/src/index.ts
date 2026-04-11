@@ -4,6 +4,7 @@ import "dotenv/config";
 import { Command } from "commander";
 import chalk from "chalk";
 import { fetchSource } from "./pipeline/fetchSource.js";
+import { runStaticAnalysis } from "./pipeline/staticAnalysis.js";
 import { analyzeStructure } from "./pipeline/structuralAnalysis.js";
 import { adversarialAudit } from "./pipeline/adversarialAudit.js";
 import { testExploits } from "./pipeline/exploitTesting.js";
@@ -19,28 +20,44 @@ program
 program
   .command("audit")
   .description("Run a full security audit on a smart contract")
-  .argument("<address>", "Contract address to audit")
+  .argument("[address]", "Contract address to audit (omit when using --file)")
   .option("--chain <chain>", "Chain to audit on", "ethereum")
+  .option("--file <path>", "Audit a local .sol file instead of fetching from Etherscan")
   .option("--skip-publish", "Skip IPFS upload and on-chain publication")
   .option("--verbose", "Enable verbose output")
-  .action(async (address: string, options) => {
-    const { verbose, skipPublish } = options;
+  .action(async (addressArg: string | undefined, options) => {
+    const { verbose, skipPublish, file } = options;
+    const chain = String(options.chain || "ethereum");
+
+    if (!addressArg && !file) {
+      console.error(chalk.red("✗ Provide a contract address or --file <path>"));
+      process.exit(1);
+    }
+    const address: string =
+      addressArg || "0x0000000000000000000000000000000000000000";
 
     console.log(
       chalk.bold.cyan("\n  ContractLens — AI Smart Contract Auditor\n")
     );
     console.log(chalk.gray(`  Target: ${address}`));
-    console.log(chalk.gray(`  Chain:  ${options.chain}\n`));
+    console.log(chalk.gray(`  Chain:  ${chain}\n`));
 
     try {
       // ═══ PHASE 1: Source Retrieval ═══
       console.log(chalk.yellow("▶ Phase 1: Fetching contract source..."));
-      const sourceResult = await fetchSource(address);
+      const sourceResult = await fetchSource(address, chain, file);
       console.log(
         chalk.green(
           `  ✓ Source retrieved: ${sourceResult.name}${sourceResult.isDecompiled ? " (decompiled)" : " (verified)"}`
         )
       );
+      if (sourceResult.isDecompiled) {
+        console.log(
+          chalk.yellow(
+            "  ⚠ Contract is UNVERIFIED. Source was reconstructed from bytecode by AI and is unreliable — verdict will be forced to CAUTION with low confidence."
+          )
+        );
+      }
       if (verbose) {
         console.log(
           chalk.gray(
@@ -49,8 +66,50 @@ program
         );
       }
 
-      // ═══ PHASE 2: Structural Analysis ═══
-      console.log(chalk.yellow("\n▶ Phase 2: Analyzing contract structure..."));
+      // ═══ PHASE 2: Static Analysis (Slither) ═══
+      console.log(
+        chalk.yellow("\n▶ Phase 2: Running static analysis (Slither)...")
+      );
+      const staticResult = await runStaticAnalysis(sourceResult);
+      if (!staticResult.slither.available) {
+        console.log(
+          chalk.gray(
+            sourceResult.isDecompiled
+              ? "  ⊘ Skipped: contract is unverified (Slither needs real Solidity)"
+              : "  ⊘ Skipped: Slither not installed — continuing without SAST ground truth"
+          )
+        );
+      } else if (staticResult.slither.error) {
+        console.log(
+          chalk.yellow(
+            `  ⚠ Slither error: ${staticResult.slither.error} — continuing without SAST findings`
+          )
+        );
+      } else {
+        const bySeverity: Record<string, number> = {};
+        for (const f of staticResult.slither.findings) {
+          bySeverity[f.severity] = (bySeverity[f.severity] || 0) + 1;
+        }
+        const breakdown =
+          Object.entries(bySeverity)
+            .map(([k, v]) => `${v} ${k.toLowerCase()}`)
+            .join(", ") || "none";
+        console.log(
+          chalk.green(
+            `  ✓ Slither findings: ${staticResult.slither.findings.length} (${breakdown})`
+          )
+        );
+        if (verbose) {
+          for (const f of staticResult.slither.findings.slice(0, 10)) {
+            console.log(
+              chalk.gray(`    [${f.severity}] ${f.detector}: ${f.description.split("\n")[0].slice(0, 120)}`)
+            );
+          }
+        }
+      }
+
+      // ═══ PHASE 3: Structural Analysis ═══
+      console.log(chalk.yellow("\n▶ Phase 3: Analyzing contract structure..."));
       const inventory = await analyzeStructure(
         sourceResult.source,
         sourceResult.name
@@ -82,16 +141,18 @@ program
         );
       }
 
-      // ═══ PHASE 3: Adversarial Audit ═══
+      // ═══ PHASE 4: Adversarial Audit ═══
       console.log(
-        chalk.yellow("\n▶ Phase 3: Running adversarial audit (3 AI passes)...")
+        chalk.yellow("\n▶ Phase 4: Running adversarial audit (3 AI passes)...")
       );
       console.log(chalk.gray("    Pass 1: Attacker analysis..."));
       console.log(chalk.gray("    Pass 2: Defender analysis..."));
       console.log(chalk.gray("    Pass 3: Final verdict..."));
       const auditResult = await adversarialAudit(
         sourceResult.source,
-        inventory
+        inventory,
+        sourceResult.isDecompiled,
+        staticResult.slither.findings
       );
       console.log(
         chalk.green(
@@ -109,9 +170,21 @@ program
         )
       );
 
-      // ═══ PHASE 4: Exploit Testing ═══
+      if (verbose && auditResult.exploits.length > 0) {
+        console.log(chalk.gray("    ─── Exploit details ───"));
+        for (const e of auditResult.exploits) {
+          console.log(
+            chalk.gray(
+              `    [${e.id}] ${e.severity} — ${e.description}`
+            )
+          );
+        }
+        console.log(chalk.gray(`    Summary: ${auditResult.summary}`));
+      }
+
+      // ═══ PHASE 5: Exploit Testing ═══
       console.log(
-        chalk.yellow("\n▶ Phase 4: Testing exploits in Foundry sandbox...")
+        chalk.yellow("\n▶ Phase 5: Testing exploits in Foundry sandbox...")
       );
       const critHighCount = auditResult.exploits.filter(
         (e) => e.severity === "CRITICAL" || e.severity === "HIGH"
@@ -137,20 +210,21 @@ program
         )
       );
 
-      // ═══ PHASE 5: Publication ═══
+      // ═══ PHASE 6: Publication ═══
       let ipfsCid = "N/A";
       let txHash = "N/A";
 
       if (!skipPublish) {
         console.log(
-          chalk.yellow("\n▶ Phase 5: Publishing audit results...")
+          chalk.yellow("\n▶ Phase 6: Publishing audit results...")
         );
         try {
           const publishResult = await publishAudit(
             address,
             sourceResult.name,
             auditResult,
-            testResults
+            testResults,
+            chain
           );
           ipfsCid = publishResult.ipfsCid;
           txHash = publishResult.txHash;
@@ -165,7 +239,7 @@ program
         }
       } else {
         console.log(
-          chalk.gray("\n▶ Phase 5: Skipped (--skip-publish)")
+          chalk.gray("\n▶ Phase 6: Skipped (--skip-publish)")
         );
       }
 

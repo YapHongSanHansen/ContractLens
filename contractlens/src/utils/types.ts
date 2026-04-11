@@ -45,6 +45,19 @@ export interface SourceResult {
   source: string;
   name: string;
   isDecompiled: boolean;
+  // Raw per-file source map, preserving the original paths Etherscan returned.
+  // Slither needs a proper tree (to resolve imports); the flattened `source`
+  // field is only suitable for the LLM.
+  files?: Record<string, string>;
+  compilerVersion?: string;
+}
+
+export interface SlitherFinding {
+  detector: string;
+  severity: "HIGH" | "MEDIUM" | "LOW" | "INFORMATIONAL" | "OPTIMIZATION";
+  description: string;
+  functions: string[];
+  swcId?: string;
 }
 
 export interface PublishResult {

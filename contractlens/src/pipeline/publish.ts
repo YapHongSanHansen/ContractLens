@@ -21,7 +21,8 @@ export async function publishAudit(
   address: string,
   contractName: string,
   audit: AuditResult,
-  testResults: ExploitTestResult[]
+  testResults: ExploitTestResult[],
+  chain: string = "ethereum"
 ): Promise<PublishResult> {
   // Generate markdown report
   const markdown = generateMarkdownReport(
@@ -35,7 +36,7 @@ export async function publishAudit(
   const ipfsCid = await pinReport(markdown, address);
 
   // Write to on-chain registry
-  const txHash = await writeToRegistry(address, audit, testResults, ipfsCid);
+  const txHash = await writeToRegistry(address, audit, testResults, ipfsCid, chain);
 
   return { ipfsCid, txHash };
 }
@@ -127,7 +128,8 @@ async function writeToRegistry(
   address: string,
   audit: AuditResult,
   testResults: ExploitTestResult[],
-  ipfsCid: string
+  ipfsCid: string,
+  chain: string
 ): Promise<string> {
   const registryAddress = process.env.REGISTRY_ADDRESS;
   const privateKey = process.env.PRIVATE_KEY;
@@ -141,17 +143,16 @@ async function writeToRegistry(
     (privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as `0x${string}`
   );
 
-  // Use sepolia by default for safety; switch to mainnet if RPC_URL points to mainnet
-  const chain = rpcUrl.includes("sepolia") ? sepolia : mainnet;
+  const viemChain = chain.toLowerCase() === "sepolia" ? sepolia : mainnet;
 
   const walletClient = createWalletClient({
     account,
-    chain,
+    chain: viemChain,
     transport: http(rpcUrl),
   });
 
   const publicClient = createPublicClient({
-    chain,
+    chain: viemChain,
     transport: http(rpcUrl),
   });
 
