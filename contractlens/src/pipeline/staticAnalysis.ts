@@ -20,6 +20,6 @@ export async function runStaticAnalysis(
     return { slither: { available: false, findings: [] } };
   }
 
-  const slither = runSlither(source.files, source.compilerVersion);
+  const slither = runSlither(source.files, source.compilerVersion, source.name);
   return { slither };
 }

@@ -25,6 +25,14 @@ contractlens/foundry-sandbox/lib/
 contractlens/foundry-sandbox/foundry.lock
 contractlens/foundry-sandbox/.gitmodules
 
+# Badge-deploy foundry state (top-level foundry.toml at contractlens/)
+contractlens/broadcast/
+contractlens/cache/
+contractlens/contracts/out/
+
+# Local slither smoke-test fixtures
+slither-verify/
+
 # AI-generated exploit tests (regenerated every audit run)
 contractlens/foundry-sandbox/test/Exploit_*.t.sol
 

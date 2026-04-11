@@ -224,12 +224,32 @@ program
             sourceResult.name,
             auditResult,
             testResults,
-            chain
+            chain,
+            inventory.type
           );
           ipfsCid = publishResult.ipfsCid;
           txHash = publishResult.txHash;
           console.log(chalk.green(`  ✓ IPFS CID: ${ipfsCid}`));
           console.log(chalk.green(`  ✓ TX Hash: ${txHash}`));
+          if (publishResult.badge) {
+            const b = publishResult.badge;
+            const artLabel =
+              b.imageMethod === "custom-file"
+                ? "Custom file (BADGE_CUSTOM_IMAGE_PATH)"
+                : b.imageMethod === "ai-dalle3"
+                  ? "AI (DALL·E 3)"
+                  : b.imageMethod === "svg-level2"
+                    ? "SVG fallback"
+                    : "unknown";
+            console.log(chalk.green(`  ✓ Badge minted: token #${b.tokenId}`));
+            console.log(chalk.green(`    • Art:       ${artLabel}`));
+            console.log(chalk.green(`    • Recipient: ${b.recipient}`));
+            console.log(chalk.green(`    • Mint tx:   ${b.mintTxHash}`));
+            console.log(chalk.green(`    • tokenURI:  ${b.tokenURI}`));
+            if (b.openseaUrl) {
+              console.log(chalk.green(`    • View:      ${b.openseaUrl}`));
+            }
+          }
         } catch (err) {
           console.log(
             chalk.red(

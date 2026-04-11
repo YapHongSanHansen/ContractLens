@@ -1,0 +1,10 @@
+[profile.default]
+src = "contracts"
+out = "contracts/out"
+script = "contracts/script"
+libs = ["foundry-sandbox/lib"]
+solc_version = "0.8.24"
+
+[rpc_endpoints]
+sepolia = "${RPC_URL}"
+mainnet = "${RPC_URL}"

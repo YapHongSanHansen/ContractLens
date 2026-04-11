@@ -1,5 +1,5 @@
 import { execSync } from "child_process";
-import { writeFileSync, mkdirSync, rmSync } from "fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "fs";
 import path from "path";
 import os from "os";
 import type { SlitherFinding } from "./types.js";
@@ -11,6 +11,7 @@ export function isSlitherAvailable(): boolean {
     execSync("slither --version", {
       stdio: ["ignore", "ignore", "ignore"],
       timeout: 5000,
+      shell: "cmd.exe",
     });
     return true;
   } catch {
@@ -26,19 +27,22 @@ function parseSolcVersion(compilerVersion: string | undefined): string | null {
   return match ? match[1] : null;
 }
 
-// Best-effort solc-select switch. If solc-select isn't installed or the
-// version isn't available, swallow the error — Slither will fall back to
-// whatever solc is on PATH and either succeed or produce a compile error
-// we'll log.
-function trySelectSolc(version: string | null): void {
-  if (!version) return;
+// Best-effort solc-select switch. Returns a diagnostic string describing
+// what happened so the caller can include it in any downstream error.
+function trySelectSolc(version: string | null): string {
+  if (!version) return "no compiler version supplied";
   try {
     execSync(`solc-select use ${version} --always-install`, {
-      stdio: ["ignore", "ignore", "ignore"],
-      timeout: 60000,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 120000,
+      shell: "cmd.exe",
     });
-  } catch {
-    // Silent — caller will see any compile failure in slither stderr.
+    return `solc-select use ${version} ok`;
+  } catch (err) {
+    const e = err as { stderr?: Buffer; stdout?: Buffer; message: string };
+    const stderr = e.stderr?.toString().trim() || "";
+    const stdout = e.stdout?.toString().trim() || "";
+    return `solc-select use ${version} failed: ${stderr || stdout || e.message}`.slice(0, 300);
   }
 }
 
@@ -116,50 +120,119 @@ export interface SlitherRunResult {
   error?: string;
 }
 
+// Pick the file we'll hand to slither. Slither via crytic-compile's Foundry
+// platform detector crashes with `assert project_root is not None` when given
+// a directory on Windows, so we target a specific .sol file instead — solc
+// follows relative imports from there. We prefer a file whose basename or
+// contract name matches `contractName`, falling back to the first .sol file
+// that isn't obviously an interface/library.
+function pickEntryFile(
+  dir: string,
+  files: Record<string, string>,
+  contractName: string | undefined
+): string | null {
+  const solFiles = Object.keys(files).filter((f) => f.endsWith(".sol"));
+  if (solFiles.length === 0) return null;
+
+  const normalize = (s: string) => s.replace(/^[a-zA-Z]:/, "").replace(/^[/\\]+/, "");
+  const toAbs = (f: string) => path.join(dir, normalize(f));
+
+  if (contractName) {
+    const byBasename = solFiles.find(
+      (f) => path.basename(f, ".sol").toLowerCase() === contractName.toLowerCase()
+    );
+    if (byBasename) return toAbs(byBasename);
+
+    const contractRegex = new RegExp(`\\bcontract\\s+${contractName}\\b`);
+    const byContents = solFiles.find((f) => contractRegex.test(files[f]));
+    if (byContents) return toAbs(byContents);
+  }
+
+  return toAbs(solFiles[0]);
+}
+
 export function runSlither(
   files: Record<string, string>,
   compilerVersion: string | undefined,
+  contractName?: string,
   timeoutMs: number = 180000
 ): SlitherRunResult {
   if (!isSlitherAvailable()) {
     return { available: false, findings: [] };
   }
 
-  trySelectSolc(parseSolcVersion(compilerVersion));
+  const solcDiag = trySelectSolc(parseSolcVersion(compilerVersion));
 
   const { dir, cleanup } = writeSourceTree(files);
+  const entryFile = pickEntryFile(dir, files, contractName);
+  if (!entryFile) {
+    cleanup();
+    return {
+      available: true,
+      findings: [],
+      error: "no .sol files found in source tree",
+    };
+  }
+
+  // Write slither JSON to a file instead of stdout. On Windows, slither.exe's
+  // Python subprocess output gets swallowed when stdio is piped via Node's
+  // execSync — but a file write always works. Unique name so concurrent runs
+  // don't stomp on each other.
+  const jsonPath = path.join(
+    os.tmpdir(),
+    `contractlens-slither-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`
+  );
 
   try {
-    // --json - writes JSON to stdout. Slither exits nonzero when any finding
-    // is reported, so we catch and parse stdout from the error object too.
-    let stdout = "";
     try {
-      stdout = execSync(`slither "${dir}" --json -`, {
+      execSync(`slither "${entryFile}" --json "${jsonPath}"`, {
         timeout: timeoutMs,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["ignore", "ignore", "ignore"],
         maxBuffer: 20 * 1024 * 1024,
+        shell: "cmd.exe",
+        cwd: dir,
+        env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
       });
     } catch (err: unknown) {
-      const e = err as { stdout?: string; stderr?: string; message: string };
-      // Findings-present exit codes still emit JSON on stdout.
-      if (e.stdout && e.stdout.trim().startsWith("{")) {
-        stdout = e.stdout;
-      } else {
+      // Slither exits nonzero when any finding is reported — but the JSON
+      // file is still written. Only treat this as a crash if the file is
+      // missing or empty.
+      const e = err as { message: string };
+      if (!existsSync(jsonPath)) {
         return {
           available: true,
           findings: [],
-          error: (e.stderr || e.message || "unknown slither error").slice(
-            0,
-            500
-          ),
+          error: `slither crashed (${solcDiag}): ${e.message || "no output"}`.slice(0, 800),
         };
       }
     }
 
+    if (!existsSync(jsonPath)) {
+      return {
+        available: true,
+        findings: [],
+        error: `slither produced no output (${solcDiag})`,
+      };
+    }
+
+    const raw = readFileSync(jsonPath, "utf-8");
+    try {
+      rmSync(jsonPath, { force: true });
+    } catch {
+      // Ignore cleanup failure
+    }
+
+    if (!raw.trim()) {
+      return {
+        available: true,
+        findings: [],
+        error: "slither wrote an empty JSON file",
+      };
+    }
+
     let parsed: SlitherJsonOutput;
     try {
-      parsed = JSON.parse(stdout);
+      parsed = JSON.parse(raw);
     } catch {
       return {
         available: true,
